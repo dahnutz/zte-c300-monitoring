@@ -1,0 +1,1809 @@
+openapi: 3.1.0
+info:
+  title: ZTE C300 Monitoring API
+  description: |
+    Read-only SNMP collector for ZTE C300 OLTs (C320-derived mappings remain
+    in code but are not a separate compatibility guarantee). Live routes
+    return PON inventory, ONU detail, uplink topology, Timescale history,
+    status/UNI events and unconfigured-ONU discovery. HTTP POST/DELETE only
+    touch the collector Redis cache.
+
+    **Multi-OLT:** when the instance is configured with multiple OLTs (the `OLTS`
+    env var), every `/api/v1/board/...` and `/api/v1/history/...` path below is
+    also available under `/api/v1/olt/{olt_id}/...`, where `{olt_id}` selects
+    the target OLT. The configured default OLT continues to answer the bare
+    `/api/v1/board/...` and `/api/v1/history/...` paths shown here. `board_id`
+    is the physical GPON slot and `pon_id` is validated against that slot's card
+    (GTGO=8 or GTGH=16 PON ports). History routes require TimescaleDB.
+
+    API contract version is `v1` (endpoint prefix `/api/v1`). The binary
+    version and contract version are exposed via `X-App-Version` and
+    `X-API-Version` response headers on every request.
+  version: 0.1.0-dev
+  contact:
+    name: API Support
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: http://localhost:8081
+    description: Local development server
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Liveness probe (legacy alias)
+      description: |
+        Returns the liveness status of the service. Kept for backwards
+        compatibility; new deployments should prefer `/healthz`.
+      operationId: healthCheck
+      tags:
+        - Health
+      security: []
+      responses:
+        "200":
+          description: Server is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+                required:
+                  - status
+
+  /healthz:
+    get:
+      summary: Liveness probe
+      description: |
+        Kubernetes-style liveness probe. Always returns 200 OK when the
+        process is running; does not inspect dependencies. Use `/readyz`
+        for readiness gating.
+      operationId: livenessProbe
+      tags:
+        - Health
+      security: []
+      responses:
+        "200":
+          description: Server is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+
+  /readyz:
+    get:
+      summary: Readiness probe with dependency checks
+      description: |
+        Returns 200 when critical dependency probes (Redis, default SNMP) are
+        healthy, 503 otherwise. Probe results are cached per-dependency TTL
+        (Redis 5s, SNMP 30s) so this endpoint is cheap to call.
+
+        Probe keys are `redis`, `snmp_default` and the optional aggregate
+        `snmp_olts`. A secondary OLT failure degrades the aggregate report
+        without changing readiness to 503. Failed probes cache for at most 5s.
+      operationId: readinessProbe
+      tags:
+        - Health
+      security: []
+      responses:
+        "200":
+          description: Service is ready to serve traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  dependencies:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        state:
+                          type: string
+                          enum: [up, down]
+                        error:
+                          type: string
+                    example:
+                      redis:
+                        state: up
+                      snmp_c320:
+                        state: up
+                      snmp_c300a:
+                        state: up
+        "503":
+          description: One or more dependencies are down
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not_ready
+                  dependencies:
+                    type: object
+
+  /version:
+    get:
+      summary: Build metadata
+      description: |
+        Returns JSON build metadata (version, API contract version, git
+        commit, build time, uptime). Useful for release verification and
+        Grafana/Kibana panels. Unauthenticated — the same data is visible
+        in Docker image labels.
+      operationId: versionInfo
+      tags:
+        - Health
+      security: []
+      responses:
+        "200":
+          description: Build metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    description: Binary semantic version
+                    example: "3.0.0"
+                  api_version:
+                    type: string
+                    description: API contract version prefix
+                    example: "v1"
+                  commit:
+                    type: string
+                    description: Git commit SHA at build time
+                    example: "abcd123"
+                  build_time:
+                    type: string
+                    description: Build timestamp (RFC3339)
+                    example: "2026-04-12T10:00:00Z"
+                  uptime:
+                    type: string
+                    description: Process uptime
+                    example: "48h30m0s"
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: |
+        OpenMetrics / Prometheus exposition endpoint. Unauthenticated —
+        scrapers are expected to run on the same private network. Returns
+        HTTP request metrics, SNMP operation counters/histograms, and
+        cache hit/miss counters.
+      operationId: metricsEndpoint
+      tags:
+        - Health
+      security: []
+      responses:
+        "200":
+          description: Prometheus text-format metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/v1/board/{board_id}/pon/{pon_id}:
+    get:
+      summary: Get all ONUs for a board/PON combination
+      description: Retrieves a list of all ONUs connected to the specified board and PON port.
+      operationId: getOnusByBoardPon
+      tags:
+        - ONU
+      parameters:
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+      responses:
+        "200":
+          description: List of ONUs retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ONUInfoPerBoard"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/board/{board_id}/pon/{pon_id}/cache/clear:
+    delete:
+      summary: Clear cache for a board/PON combination
+      description: Removes the Redis cache for the specified board and PON port. Never sends SNMP writes and never deletes an ONU.
+      operationId: clearCacheByBoardPon
+      tags:
+        - Cache
+      parameters:
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+      responses:
+        "200":
+          description: Cache cleared successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                            example: Cache deleted successfully
+                          board_id:
+                            type: integer
+                            example: 1
+                          pon_id:
+                            type: integer
+                            example: 1
+                        required:
+                          - message
+                          - board_id
+                          - pon_id
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/board/{board_id}/pon/{pon_id}/onu/{onu_id}:
+    get:
+      summary: Get specific ONU detail
+      description: Retrieves detailed information for a specific ONU including optical power levels, uptime, and offline history.
+      operationId: getOnuDetail
+      tags:
+        - ONU
+      parameters:
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+        - $ref: "#/components/parameters/OnuId"
+      responses:
+        "200":
+          description: ONU detail retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ONUCustomerInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/board/{board_id}/pon/{pon_id}/onu_id/empty:
+    get:
+      summary: Get available/empty ONU IDs
+      description: Returns a list of ONU IDs that are not currently assigned on the specified board and PON port.
+      operationId: getEmptyOnuIds
+      tags:
+        - ONU ID
+      parameters:
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+      responses:
+        "200":
+          description: List of empty ONU IDs retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/OnuID"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/board/{board_id}/pon/{pon_id}/onu_id_sn:
+    get:
+      summary: Get ONU IDs with serial numbers
+      description: Returns a list of ONU IDs along with their corresponding serial numbers for the specified board and PON port.
+      operationId: getOnuIdSerialNumbers
+      tags:
+        - ONU ID
+      parameters:
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+        - $ref: "#/components/parameters/NoCache"
+      responses:
+        "200":
+          description: ONU IDs with serial numbers retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/OnuSerialNumber"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/board/{board_id}/pon/{pon_id}/onu_id/update:
+    post:
+      summary: Force refresh empty ONU ID cache
+      description: Triggers a cache refresh for empty ONU IDs on the specified board and PON port.
+      operationId: updateEmptyOnuIdCache
+      tags:
+        - Cache
+      parameters:
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+      responses:
+        "200":
+          description: Cache updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: string
+                        example: Success Update Empty ONU_ID
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/paginate/board/{board_id}/pon/{pon_id}:
+    get:
+      summary: Get paginated ONU list
+      description: Retrieves a paginated list of ONUs for the specified board and PON port with metadata about total rows and page count.
+      operationId: getOnusPaginated
+      tags:
+        - ONU
+      parameters:
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+        - name: page
+          in: query
+          description: Page number (1-indexed)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+            example: 1
+        - name: limit
+          in: query
+          description: Number of items per page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+            example: 10
+      responses:
+        "200":
+          description: Paginated list of ONUs retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ONUInfoPerBoard"
+                      meta:
+                        $ref: "#/components/schemas/Meta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/board/{board_id}/pon/{pon_id}/onu/{onu_id}/cache/clear:
+    delete:
+      summary: Invalidate cached ONU and related PON records
+      description: Changes Redis cache only; never sends an SNMP write.
+      operationId: invalidateOnuCache
+      tags: [Cache]
+      parameters:
+        - $ref: '#/components/parameters/BoardId'
+        - $ref: '#/components/parameters/PonId'
+        - $ref: '#/components/parameters/OnuId'
+      responses:
+        '200':
+          description: Related cache invalidated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Multi-OLT variants. Identical semantics to the bare /api/v1/board/... paths
+  # above, but {olt_id} selects which OLT in the OLTS/OLTS_FILE registry to
+  # target. The configured DEFAULT_OLT also answers the bare paths above.
+  # ───────────────────────────────────────────────────────────────────────────
+  /api/v1/uplinks:
+    get:
+      summary: Auto-detect OLT cards and uplink ethernet ports (default OLT)
+      description: >
+        SNMP auto-detect of the OLT's physical cards (ENTITY-MIB
+        entPhysicalDescr/entPhysicalClass, classified as gpon / control /
+        uplink / power) and uplink ethernet ports (IF-MIB ifName/admin/oper/
+        speed; xgei_ = 10G, gei_ = 1G, SmartGroupN = LAG). LAG members come
+        from ifStackStatus when the agent exposes it. Detection-only — no
+        configuration writes. Firmware naming and card-slot interpretation
+        require hardware verification. Card slot prefers the reported
+        parent-relative position, with an explicit heuristic fallback.
+      operationId: getUplinkTopology
+      tags:
+        - Uplink
+      responses:
+        "200":
+          description: Auto-detected card + uplink-port topology
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/UplinkTopology"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/board/{board_id}/pon/{pon_id}:
+    get:
+      summary: Get all ONUs for a board/PON (multi-OLT)
+      description: Same as the bare path but scoped to the OLT named by `olt_id`.
+      operationId: getOnusByBoardPonForOlt
+      tags:
+        - ONU
+      parameters:
+        - $ref: "#/components/parameters/OltId"
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+      responses:
+        "200":
+          description: List of ONUs retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ONUInfoPerBoard"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/board/{board_id}/pon/{pon_id}/cache/clear:
+    delete:
+      summary: Clear cache for a board/PON (multi-OLT)
+      description: Same as the bare path but scoped to the OLT named by `olt_id`.
+      operationId: clearCacheByBoardPonForOlt
+      tags:
+        - Cache
+      parameters:
+        - $ref: "#/components/parameters/OltId"
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+      responses:
+        "200":
+          description: Cache cleared successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                            example: Cache deleted successfully
+                          board_id:
+                            type: integer
+                            example: 1
+                          pon_id:
+                            type: integer
+                            example: 1
+                        required:
+                          - message
+                          - board_id
+                          - pon_id
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/board/{board_id}/pon/{pon_id}/onu/{onu_id}:
+    get:
+      summary: Get specific ONU detail (multi-OLT)
+      description: Same as the bare path but scoped to the OLT named by `olt_id`.
+      operationId: getOnuDetailForOlt
+      tags:
+        - ONU
+      parameters:
+        - $ref: "#/components/parameters/OltId"
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+        - $ref: "#/components/parameters/OnuId"
+      responses:
+        "200":
+          description: ONU detail retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ONUCustomerInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/board/{board_id}/pon/{pon_id}/onu_id/empty:
+    get:
+      summary: Get available/empty ONU IDs (multi-OLT)
+      description: Same as the bare path but scoped to the OLT named by `olt_id`.
+      operationId: getEmptyOnuIdsForOlt
+      tags:
+        - ONU ID
+      parameters:
+        - $ref: "#/components/parameters/OltId"
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+      responses:
+        "200":
+          description: List of empty ONU IDs retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/OnuID"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/board/{board_id}/pon/{pon_id}/onu_id_sn:
+    get:
+      summary: Get ONU IDs with serial numbers (multi-OLT)
+      description: Same as the bare path but scoped to the OLT named by `olt_id`.
+      operationId: getOnuIdSerialNumbersForOlt
+      tags:
+        - ONU ID
+      parameters:
+        - $ref: "#/components/parameters/OltId"
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+        - $ref: "#/components/parameters/NoCache"
+      responses:
+        "200":
+          description: ONU IDs with serial numbers retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/OnuSerialNumber"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/board/{board_id}/pon/{pon_id}/onu_id/update:
+    post:
+      summary: Force refresh empty ONU ID cache (multi-OLT)
+      description: Same as the bare path but scoped to the OLT named by `olt_id`.
+      operationId: updateEmptyOnuIdCacheForOlt
+      tags:
+        - Cache
+      parameters:
+        - $ref: "#/components/parameters/OltId"
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+      responses:
+        "200":
+          description: Cache updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: string
+                        example: Success Update Empty ONU_ID
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/paginate/board/{board_id}/pon/{pon_id}:
+    get:
+      summary: Get paginated ONU list (multi-OLT)
+      description: Same as the bare path but scoped to the OLT named by `olt_id`.
+      operationId: getOnusPaginatedForOlt
+      tags:
+        - ONU
+      parameters:
+        - $ref: "#/components/parameters/OltId"
+        - $ref: "#/components/parameters/BoardId"
+        - $ref: "#/components/parameters/PonId"
+        - name: page
+          in: query
+          description: Page number (1-indexed)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+            example: 1
+        - name: limit
+          in: query
+          description: Number of items per page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+            example: 10
+      responses:
+        "200":
+          description: Paginated list of ONUs retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ONUInfoPerBoard"
+                      meta:
+                        $ref: "#/components/schemas/Meta"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/uplinks:
+    get:
+      summary: Auto-detect OLT cards and uplink ethernet ports (specific OLT)
+      description: Multi-OLT variant of /api/v1/uplinks for the OLT selected by olt_id.
+      operationId: getUplinkTopologyByOlt
+      tags:
+        - Uplink
+      parameters:
+        - $ref: "#/components/parameters/OltId"
+      responses:
+        "200":
+          description: Auto-detected card + uplink-port topology
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/WebResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/UplinkTopology"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/olt/{olt_id}/board/{board_id}/pon/{pon_id}/onu/{onu_id}/cache/clear:
+    delete:
+      summary: Invalidate cached ONU and related PON records
+      description: Changes Redis cache only; never sends an SNMP write.
+      operationId: invalidateOnuCacheForOlt
+      tags: [Cache]
+      parameters:
+        - $ref: '#/components/parameters/OltId'
+        - $ref: '#/components/parameters/BoardId'
+        - $ref: '#/components/parameters/PonId'
+        - $ref: '#/components/parameters/OnuId'
+      responses:
+        '200':
+          description: Related cache invalidated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/history/samples:
+    get:
+      summary: List stored PON-list samples
+      description: |
+        Returns TimescaleDB snapshots written by the read-only poller (status,
+        RX/TX, serial, position, Ethernet UNI summary). Rows also include
+        `status_changed_at`, `previous_status` and `expected_eth_ports` from
+        the current identity table. Does not query the OLT. Requires TimescaleDB.
+
+        Also available at `/api/v1/olt/{olt_id}/history/samples`.
+
+        When `count_by` is set, `data` is an aggregate (`group_by`, `run_id`,
+        `from`, `to`, `total`, `counts[]`) instead of a sample array.
+      operationId: listHistorySamples
+      tags: [History]
+      parameters:
+        - name: run
+          in: query
+          description: >
+            `latest`/`last` selects the newest collection run's time window, or
+            pass a numeric run id from `/history/runs`. Overrides `from`/`to`.
+          schema: { type: string }
+        - name: status
+          in: query
+          description: Case-insensitive ONU status (Online, Offline, …)
+          schema: { type: string }
+        - name: serial
+          in: query
+          schema: { type: string }
+        - name: board
+          in: query
+          schema: { type: integer }
+        - name: pon
+          in: query
+          schema: { type: integer }
+        - name: onu_id
+          in: query
+          schema: { type: integer }
+        - name: from
+          in: query
+          description: RFC3339 start (default now-24h). Ignored when `run` is set.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: RFC3339 end (default now). Ignored when `run` is set.
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          description: Max rows (default 500, or 2000 when `run` is set). Unused with `count_by`.
+          schema: { type: integer, default: 500, maximum: 2000 }
+        - name: count_by
+          in: query
+          description: Return counts grouped by this field instead of sample rows.
+          schema:
+            type: string
+            enum: [status, board, pon, onu_type, eth_link]
+      responses:
+        '200':
+          description: Sample list or count_by aggregate
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/HistorySamplesResponse'
+                  - $ref: '#/components/schemas/HistoryCountsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/history/runs:
+    get:
+      summary: List poller collection runs
+      description: Duration, PON success/error counts and ONU rows written.
+      operationId: listCollectionRuns
+      tags: [History]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        '200':
+          description: Collection run list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryRunsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/history/status-events:
+    get:
+      summary: List ONU operational-state transitions
+      description: >
+        Derived from stored samples. Existing onu_samples rows are not rewritten.
+        Also available at `/api/v1/olt/{olt_id}/history/status-events`.
+      operationId: listStatusEvents
+      tags: [History]
+      parameters:
+        - name: serial
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 500 }
+      responses:
+        '200':
+          description: Status event list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryStatusEventsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/history/eth-events:
+    get:
+      summary: List Ethernet UNI flaps
+      description: >
+        Per-port admin/link changes derived from stored samples.
+        Also available at `/api/v1/olt/{olt_id}/history/eth-events`.
+      operationId: listEthEvents
+      tags: [History]
+      parameters:
+        - name: serial
+          in: query
+          schema: { type: string }
+        - name: port
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 500 }
+      responses:
+        '200':
+          description: Ethernet event list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryEthEventsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/history/unauth:
+    get:
+      summary: List unconfigured ONUs last seen by the OLT
+      description: >
+        Last discovery snapshot. `unsupported` means the firmware walk is not
+        confirmed. Does not delete or rewrite onu_samples.
+        Also available at `/api/v1/olt/{olt_id}/history/unauth`.
+      operationId: listUnauth
+      tags: [History]
+      responses:
+        '200':
+          description: Unconfigured-ONU discovery
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryUnauthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >-
+        API key for /api/v1 routes. With a single `API_KEY` the key only gates
+        access. With the per-tenant `API_USERS` registry, the key also identifies
+        the caller (user_id + role): a user sees only the OLTs whose `user_id`
+        matches theirs — requesting another tenant's OLT returns 404 (not 403, to
+        avoid enumeration) — while an `admin` role sees all OLTs. A missing or
+        unknown key returns 401. Startup requires API_KEY or API_USERS.
+
+  parameters:
+    OltId:
+      name: olt_id
+      in: path
+      required: true
+      description: >-
+        Selects the target OLT in a multi-OLT deployment (the `OLTS` / `OLTS_FILE`
+        registry). Must match the `id` of one configured OLT. Present only on the
+        `/api/v1/olt/{olt_id}/...` paths; the configured default OLT additionally
+        answers the bare `/api/v1/board/...` paths. An unknown id returns 404.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]+$"
+        example: c320
+    BoardId:
+      name: board_id
+      in: path
+      required: true
+      description: >-
+        Physical GPON slot on the OLT (board). Which slots are valid depends on
+        the deployment's OLT_BOARDS setting: a ZTE C320 typically uses slots 1-2,
+        while a C300 chassis holds its GPON cards in higher slots (e.g. 3 and 5).
+        Requests for a slot not configured via OLT_BOARDS return 400.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 30
+        example: 1
+    PonId:
+      name: pon_id
+      in: path
+      required: true
+      description: PON port identifier on the board
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 16
+        example: 1
+    OnuId:
+      name: onu_id
+      in: path
+      required: true
+      description: ONU identifier on the PON port
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 128
+        example: 1
+    NoCache:
+      name: nocache
+      in: query
+      required: false
+      description: >-
+        When `true`, force a fresh SNMP read, bypassing the serial-list Redis
+        cache (`board_<b>_pon_<p>_serial_list`) and refreshing it with the result.
+        Used by write-olt-zte's pre-write existence checks so a delete/replace
+        issued right after a provision sees the OLT's real state instead of a
+        stale cached snapshot. Any value other than `true` keeps the default
+        cached behaviour.
+      schema:
+        type: boolean
+        default: false
+        example: true
+
+  schemas:
+    UplinkTopology:
+      type: object
+      description: Auto-detected OLT card + uplink-port topology (detection-only).
+      properties:
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/UplinkCard"
+        ports:
+          type: array
+          items:
+            $ref: "#/components/schemas/UplinkPort"
+    UplinkCard:
+      type: object
+      description: Physical card/module discovered via ENTITY-MIB, including recognized firmware card classes.
+      properties:
+        ent_index:
+          type: integer
+          description: Raw entPhysical index
+          example: 200
+        slot:
+          type: integer
+          description: "Reported parent-relative position, or fallback entIndex/10 - 1"
+        slot_source:
+          type: string
+          enum: [parent_relative_position, index_heuristic]
+          description: Source of the card position; neither is a global physical location.
+          example: parent_relative_position
+        type:
+          type: string
+          description: entPhysicalDescr text
+          example: Synthetic uplink card
+        role:
+          type: string
+          enum: [gpon, control, uplink, power, other]
+          example: uplink
+    UplinkPort:
+      type: object
+      description: Uplink ethernet port or ZTE SmartGroup LAG discovered via IF-MIB.
+      properties:
+        name:
+          type: string
+          example: xgei_1/19/1
+        shelf:
+          type: integer
+          example: 1
+        slot:
+          type: integer
+          example: 19
+        port:
+          type: integer
+          example: 1
+        kind:
+          type: string
+          enum: ["10G", "1G", "lag"]
+          example: "10G"
+        admin_status:
+          type: string
+          example: up
+        oper_status:
+          type: string
+          example: up
+        speed_mbps:
+          type: integer
+          example: 10000
+        lag:
+          type: string
+          description: Aggregator ifName when this port is a SmartGroup member
+          example: SmartGroup1
+        members:
+          type: array
+          description: Member ifNames when kind is lag
+          items:
+            type: string
+          example: [xgei_1/2/1, xgei_1/2/2]
+    WebResponse:
+      type: object
+      description: Standard success response wrapper
+      properties:
+        code:
+          type: integer
+          description: HTTP status code
+          example: 200
+        status:
+          type: string
+          description: Fixed string "success" for 2xx responses (ISP adapter standard)
+          example: success
+        data: {}
+      required:
+        - code
+        - status
+        - data
+
+    ErrorResponse:
+      type: object
+      description: |
+        Standard error response wrapper aligned to the `isp-adapter-standard`
+        wiki page. `error_code` is a machine-readable identifier, `data`
+        carries either the error message (string) or a structured object with
+        `message` + `details`, and `request_id` echoes the request correlation
+        ID so operators can correlate across services.
+      properties:
+        code:
+          type: integer
+          description: HTTP status code
+          example: 400
+        status:
+          type: string
+          description: HTTP reason phrase (e.g. "Bad Request", "Not Found")
+          example: Bad Request
+        error_code:
+          type: string
+          description: Machine-readable error code
+          enum:
+            - VALIDATION_ERROR
+            - NOT_FOUND
+            - UNAUTHORIZED
+            - SNMP_ERROR
+            - REDIS_ERROR
+            - CONFIG_ERROR
+            - INTERNAL_ERROR
+          example: VALIDATION_ERROR
+        data:
+          description: |
+            Either the human-readable error message (string) or an object
+            containing `message` + `details` when structured context is
+            available. Callers should handle both shapes.
+          oneOf:
+            - type: string
+              example: board_id is not a configured GPON slot
+            - type: object
+              properties:
+                message:
+                  type: string
+                  example: board_id is not a configured GPON slot
+                details:
+                  type: object
+                  additionalProperties: true
+                  example:
+                    received: "99"
+        request_id:
+          type: string
+          description: Correlation ID (same value as X-Request-ID response header)
+          example: d7dhp4pciod1cuth4i80
+      required:
+        - code
+        - status
+        - error_code
+        - data
+
+    Meta:
+      type: object
+      description: Pagination metadata
+      properties:
+        page:
+          type: integer
+          description: Current page number
+          example: 1
+        limit:
+          type: integer
+          description: Items per page
+          example: 10
+        page_count:
+          type: integer
+          description: Total number of pages
+          example: 7
+        total_rows:
+          type: integer
+          description: Total number of records
+          example: 69
+      required:
+        - page
+        - limit
+        - page_count
+        - total_rows
+
+    ONUInfoPerBoard:
+      type: object
+      description: Summary information for an ONU on a board/PON combination
+      properties:
+        board:
+          type: integer
+          description: Board number
+          example: 1
+        pon:
+          type: integer
+          description: PON port number
+          example: 1
+        onu_id:
+          type: integer
+          description: ONU identifier
+          example: 1
+        name:
+          type: string
+          description: Customer or ONU name
+          example: Customer-001
+        onu_type:
+          type: string
+          description: ONU hardware model
+          example: SYNTHETIC-ONU
+        serial_number:
+          type: string
+          description: ONU serial number
+          example: ZTEGC12345678
+        rx_power:
+          type: string
+          description: ONU downstream receive power in dBm; empty string when unavailable.
+          example: "-22.22"
+        tx_power:
+          type: string
+          description: ONU upstream transmit power in dBm; empty string when unavailable.
+          example: "2.57"
+        status:
+          type: string
+          description: Current ONU status
+          enum:
+            - Online
+            - Offline
+            - LOS
+            - DyingGasp
+          example: Online
+        ethernet:
+          $ref: "#/components/schemas/ONUEthernetStatus"
+      required:
+        - board
+        - pon
+        - onu_id
+        - name
+        - onu_type
+        - serial_number
+        - rx_power
+        - status
+
+    ONUEthernetStatus:
+      type: object
+      description: Live ONU Ethernet observations; missing data is distinct from link-down.
+      properties:
+        status:
+          type: string
+          enum: [ok, partial, unavailable, onu_not_online, onu_state_unknown]
+        observed_at:
+          type: string
+          format: date-time
+          description: Collector UTC observation time, not device link-change time.
+        ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/ONUEthernetPort'
+      required: [status, observed_at, ports]
+
+    ONUEthernetPort:
+      type: object
+      properties:
+        port_index:
+          type: integer
+          description: Raw Ethernet UNI index within this ONU.
+          minimum: 1
+        admin_state:
+          type: string
+          enum: [enabled, disabled, unknown]
+        link_state:
+          type: string
+          enum: [up, down, unknown]
+        speed_mbps:
+          type: [integer, 'null']
+          description: Null unless link is up and its rate is recognized.
+        duplex:
+          type: string
+          enum: [full, half, unknown]
+        admin_raw:
+          type: [integer, 'null']
+        oper_raw:
+          type: [integer, 'null']
+        speed_raw:
+          type: [integer, 'null']
+      required: [port_index, admin_state, link_state, speed_mbps, duplex, admin_raw, oper_raw, speed_raw]
+
+    ONUSample:
+      type: object
+      description: >
+        One stored PON-list observation. Optical fields are null when the
+        firmware did not return a usable value. status_changed_at /
+        previous_status / expected_eth_ports come from the current onus row.
+      properties:
+        time: { type: string, format: date-time }
+        device_id: { type: string }
+        serial_number: { type: string }
+        board: { type: integer }
+        pon: { type: integer }
+        onu_id: { type: integer }
+        name: { type: string }
+        onu_type: { type: string }
+        status: { type: string }
+        rx_power: { type: [number, 'null'] }
+        tx_power: { type: [number, 'null'] }
+        eth_status: { type: string }
+        eth_link_state: { type: string }
+        eth_admin_state: { type: string }
+        eth_speed_mbps: { type: [integer, 'null'] }
+        eth_ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/EthPortSample'
+        status_changed_at: { type: string, format: date-time }
+        previous_status: { type: string }
+        expected_eth_ports: { type: integer }
+
+    EthPortSample:
+      type: object
+      properties:
+        port: { type: integer }
+        admin: { type: string }
+        link: { type: string }
+        speed_mbps: { type: [integer, 'null'] }
+        duplex: { type: string }
+
+    CollectionRun:
+      type: object
+      properties:
+        id: { type: integer }
+        device_id: { type: string }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        status: { type: string }
+        pons_ok: { type: integer }
+        pons_error: { type: integer }
+        onus_sampled: { type: integer }
+        duration_ms: { type: integer }
+        error: { type: string }
+
+    CountBucket:
+      type: object
+      properties:
+        key: { type: string }
+        count: { type: integer }
+
+    CountResult:
+      type: object
+      properties:
+        group_by: { type: string }
+        run_id: { type: integer }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        total: { type: integer }
+        counts:
+          type: array
+          items:
+            $ref: '#/components/schemas/CountBucket'
+
+    StatusEvent:
+      type: object
+      properties:
+        time: { type: string, format: date-time }
+        device_id: { type: string }
+        serial_number: { type: string }
+        board: { type: integer }
+        pon: { type: integer }
+        onu_id: { type: integer }
+        status: { type: string }
+        previous_status: { type: string }
+        source: { type: string }
+
+    EthEvent:
+      type: object
+      properties:
+        time: { type: string, format: date-time }
+        device_id: { type: string }
+        serial_number: { type: string }
+        board: { type: integer }
+        pon: { type: integer }
+        onu_id: { type: integer }
+        port: { type: integer }
+        link_state: { type: string }
+        admin_state: { type: string }
+        previous_link: { type: string }
+        previous_admin: { type: string }
+        speed_mbps: { type: [integer, 'null'] }
+        source: { type: string }
+
+    UnauthONU:
+      type: object
+      properties:
+        device_id: { type: string }
+        serial_number: { type: string }
+        board: { type: integer }
+        pon: { type: integer }
+        onu_type: { type: string }
+        discovery_status: { type: string }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        gone_at: { type: string, format: date-time }
+
+    UnauthList:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, empty, unsupported, unavailable]
+        oid: { type: string }
+        message: { type: string }
+        observed_at: { type: string, format: date-time }
+        count: { type: integer }
+        onus:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnauthONU'
+
+    HistorySamplesResponse:
+      allOf:
+        - $ref: '#/components/schemas/WebResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/ONUSample'
+
+    HistoryCountsResponse:
+      allOf:
+        - $ref: '#/components/schemas/WebResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/CountResult'
+
+    HistoryRunsResponse:
+      allOf:
+        - $ref: '#/components/schemas/WebResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/CollectionRun'
+
+    HistoryStatusEventsResponse:
+      allOf:
+        - $ref: '#/components/schemas/WebResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/StatusEvent'
+
+    HistoryEthEventsResponse:
+      allOf:
+        - $ref: '#/components/schemas/WebResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/EthEvent'
+
+    HistoryUnauthResponse:
+      allOf:
+        - $ref: '#/components/schemas/WebResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/UnauthList'
+
+    ONUCustomerInfo:
+      type: object
+      description: Live ONU optical levels, Ethernet UNI states and reported online/offline times.
+      properties:
+        ethernet:
+          $ref: "#/components/schemas/ONUEthernetStatus"
+        board:
+          type: integer
+          example: 1
+        pon:
+          type: integer
+          example: 1
+        onu_id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          description: Customer or ONU name
+          example: Customer-001
+        description:
+          type: string
+          description: ONU location or description
+          example: Location
+        onu_type:
+          type: string
+          description: ONU hardware model
+          example: SYNTHETIC-ONU
+        serial_number:
+          type: string
+          description: ONU serial number
+          example: ZTEGC12345678
+        rx_power:
+          type: string
+          description: ONU downstream receive power in dBm; empty string when unavailable.
+          example: "-22.22"
+        tx_power:
+          type: string
+          description: ONU upstream transmit power in dBm; empty string when unavailable.
+          example: "2.57"
+        status:
+          type: string
+          description: Current ONU status
+          enum:
+            - Online
+            - Offline
+            - LOS
+            - DyingGasp
+          example: Online
+        ip_address:
+          type: string
+          description: ONU management IP address
+          example: 10.0.0.1
+        last_online:
+          type: string
+          description: Timestamp of last online event
+          example: "2024-08-11 10:09:37"
+        last_offline:
+          type: string
+          description: Timestamp of last offline event
+          example: "2024-08-11 10:08:35"
+        uptime:
+          type: string
+          description: Current uptime duration
+          example: 5 days 13 hours 10 minutes 50 seconds
+        last_down_time_duration:
+          type: string
+          description: Duration of the last downtime event
+          example: 0 days 0 hours 1 minutes 2 seconds
+        offline_reason:
+          type: string
+          description: Reason for the last offline event
+          example: PowerOff
+        gpon_optical_distance:
+          type: string
+          description: GPON optical distance in meters
+          example: "6701"
+        observed_at:
+          type: string
+          format: date-time
+          description: Collector UTC time of this live SNMP read (not per-field optical age).
+          example: "2026-01-01T12:00:00Z"
+      required:
+        - board
+        - pon
+        - onu_id
+        - name
+        - description
+        - onu_type
+        - serial_number
+        - rx_power
+        - tx_power
+        - status
+        - ip_address
+        - last_online
+        - last_offline
+        - uptime
+        - last_down_time_duration
+        - offline_reason
+        - gpon_optical_distance
+
+    OnuID:
+      type: object
+      description: An available/empty ONU ID slot
+      properties:
+        board:
+          type: integer
+          example: 1
+        pon:
+          type: integer
+          example: 1
+        onu_id:
+          type: integer
+          example: 123
+      required:
+        - board
+        - pon
+        - onu_id
+
+    OnuSerialNumber:
+      type: object
+      description: ONU ID paired with its serial number
+      properties:
+        board:
+          type: integer
+          example: 1
+        pon:
+          type: integer
+          example: 1
+        onu_id:
+          type: integer
+          example: 1
+        serial_number:
+          type: string
+          example: ZTEGC12345678
+      required:
+        - board
+        - pon
+        - onu_id
+        - serial_number
+
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 400
+            status: Bad Request
+            error_code: VALIDATION_ERROR
+            data:
+              message: board_id is not a configured GPON slot
+              details:
+                received: "99"
+            request_id: d7dhp4pciod1cuth4i80
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 401
+            status: Unauthorized
+            error_code: UNAUTHORIZED
+            data: invalid or missing API key
+            request_id: d7dhp4pciod1cuth4i80
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 404
+            status: Not Found
+            error_code: NOT_FOUND
+            data:
+              message: ONU not found
+              details:
+                board_id: 1
+                pon_id: 8
+                onu_id: 42
+            request_id: d7dhp4pciod1cuth4i80
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 429
+            status: Too Many Requests
+            error_code: INTERNAL_ERROR
+            data: Rate limit exceeded, try again later
+            request_id: d7dhp4pciod1cuth4i80
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 500
+            status: Internal Server Error
+            error_code: INTERNAL_ERROR
+            data: An unexpected error occurred
+            request_id: d7dhp4pciod1cuth4i80
+    ServiceUnavailable:
+      description: History store is not configured or is down
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: 503
+            status: Service Unavailable
+            error_code: SERVICE_UNAVAILABLE
+            data: history store is not configured
+            request_id: d7dhp4pciod1cuth4i80
+
+tags:
+  - name: Health
+    description: Server health check
+  - name: ONU
+    description: ONU monitoring and detail endpoints
+  - name: ONU ID
+    description: ONU ID listing and serial number lookup
+  - name: Cache
+    description: Cache management operations. DELETE clears Redis only.
+  - name: Uplink
+    description: Uplink / card auto-detect (read-only topology discovery)
+  - name: History
+    description: TimescaleDB PON-list samples and poller runs

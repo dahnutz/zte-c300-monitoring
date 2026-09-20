@@ -1,0 +1,175 @@
+package utils
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"go.uber.org/zap"
+	apperrors "zte-c300-monitoring/internal/errors"
+	"zte-c300-monitoring/pkg/logger"
+)
+
+// SendJSONResponse is a helper function to send a JSON response
+// Writes the appropriate headers, status code, and serializes the data to the response body.
+func SendJSONResponse(w http.ResponseWriter, statusCode int, response interface{}) {
+	w.Header().Set("Content-Type", "application/json") // Set the content type
+	w.WriteHeader(statusCode)                          // Set the status code
+	err := json.NewEncoder(w).Encode(response)         // Encode and write JSON
+	if err != nil {
+		return // Silently return if writing fails (logger could be added here if needed)
+	}
+}
+
+// requestIDFromRequest extracts the request ID from the HTTP request context.
+// Returns empty string if not present.
+func requestIDFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return RequestIDFromContext(r.Context())
+}
+
+// buildErrorResponse constructs an ErrorResponse from an error, extracting the
+// error code and data payload from AppError when possible.
+func buildErrorResponse(code int, status string, requestID string, err error) ErrorResponse {
+	resp := ErrorResponse{
+		Code:      code,
+		Status:    status,
+		ErrorCode: string(apperrors.ErrorTypeInternal),
+		RequestID: requestID,
+	}
+
+	var appErr *apperrors.AppError
+	if errors.As(err, &appErr) {
+		resp.ErrorCode = string(appErr.Type)
+		if len(appErr.Details) > 0 {
+			resp.Data = map[string]any{
+				"message": appErr.Message,
+				"details": appErr.Details,
+			}
+		} else {
+			resp.Data = appErr.Message
+		}
+		return resp
+	}
+
+	// Fallback for non-AppError errors
+	if err != nil {
+		resp.Data = err.Error()
+	}
+	return resp
+}
+
+// HandleError converts AppError to appropriate HTTP response.
+// Maps custom application error types to standard HTTP status codes.
+// Logs errors at appropriate levels for Prometheus/Grafana/Loki monitoring.
+func HandleError(w http.ResponseWriter, r *http.Request, err error) {
+	var appErr *apperrors.AppError
+	requestID := requestIDFromRequest(r)
+
+	// Check if it's our custom error
+	if errors.As(err, &appErr) {
+		baseFields := []zap.Field{
+			zap.String("error_code", string(appErr.Type)),
+			zap.String("request_id", requestID),
+			zap.String("message", appErr.Message),
+		}
+		if len(appErr.Details) > 0 {
+			baseFields = append(baseFields, zap.Any("details", appErr.Details))
+		}
+
+		switch appErr.Type {
+		case apperrors.ErrorTypeValidation: // -> 400 Bad Request
+			logger.Warn("validation_error", baseFields...)
+			writeError(w, http.StatusBadRequest, "Bad Request", requestID, appErr)
+
+		case apperrors.ErrorTypeNotFound: // -> 404 Not Found
+			logger.Debug("resource_not_found", baseFields...)
+			writeError(w, http.StatusNotFound, "Not Found", requestID, appErr)
+
+		case apperrors.ErrorTypeUnauthorized: // -> 401 Unauthorized
+			logger.Warn("unauthorized", baseFields...)
+			writeError(w, http.StatusUnauthorized, "Unauthorized", requestID, appErr)
+
+		case apperrors.ErrorTypeSNMP: // -> 503 if the OLT is unreachable, else 500
+			fields := append(baseFields, zap.Error(appErr.Err))
+			if apperrors.IsDeviceUnreachable(appErr.Err) {
+				// Dependency-unreachable: the OLT cannot be reached over SNMP
+				// (connection refused, timeout, no response, socket error).
+				// Per the ISP Adapter Standard this is 503, not 500.
+				logger.Warn("snmp_device_unreachable", fields...)
+				writeErrorWithCode(w, http.StatusServiceUnavailable, "Service Unavailable",
+					string(apperrors.ErrorTypeServiceUnavailable), requestID, appErr)
+			} else {
+				// The OLT responded, but the SNMP exchange failed for an
+				// internal/protocol reason — this is our own fault: 500.
+				logger.Error("internal_error", fields...)
+				writeError(w, http.StatusInternalServerError, "Internal Server Error", requestID, appErr)
+			}
+
+		case apperrors.ErrorTypeServiceUnavailable: // -> 503 Service Unavailable
+			fields := append(baseFields, zap.Error(appErr.Err))
+			logger.Warn("service_unavailable", fields...)
+			writeError(w, http.StatusServiceUnavailable, "Service Unavailable", requestID, appErr)
+
+		case apperrors.ErrorTypeRedis, apperrors.ErrorTypeInternal: // -> 500
+			fields := append(baseFields, zap.Error(appErr.Err))
+			logger.Error("internal_error", fields...)
+			writeError(w, http.StatusInternalServerError, "Internal Server Error", requestID, appErr)
+
+		case apperrors.ErrorTypeConfig: // -> 500
+			fields := append(baseFields, zap.Error(appErr.Err))
+			logger.Error("configuration_error", fields...)
+			writeError(w, http.StatusInternalServerError, "Internal Server Error", requestID, appErr)
+
+		default: // -> 500
+			logger.Error("unknown_error_type", baseFields...)
+			writeError(w, http.StatusInternalServerError, "Internal Server Error", requestID, appErr)
+		}
+		return
+	}
+
+	// Fallback for non-AppError errors
+	logger.Error("unhandled_error",
+		zap.String("request_id", requestID),
+		zap.Error(err),
+	)
+	writeError(w, http.StatusInternalServerError, "Internal Server Error", requestID, err)
+}
+
+func writeError(w http.ResponseWriter, code int, status, requestID string, err error) {
+	resp := buildErrorResponse(code, status, requestID, err)
+	SendJSONResponse(w, code, resp)
+}
+
+// writeErrorWithCode is like writeError but overrides the response error_code,
+// used when the HTTP-status decision reclassifies an error (e.g. an SNMP
+// transport failure surfaced as SERVICE_UNAVAILABLE rather than SNMP_ERROR).
+func writeErrorWithCode(w http.ResponseWriter, code int, status, errorCode, requestID string, err error) {
+	resp := buildErrorResponse(code, status, requestID, err)
+	if errorCode != "" {
+		resp.ErrorCode = errorCode
+	}
+	SendJSONResponse(w, code, resp)
+}
+
+// ErrorBadRequest is a helper function to send a 400 Bad Request response.
+func ErrorBadRequest(w http.ResponseWriter, r *http.Request, err error) {
+	writeError(w, http.StatusBadRequest, "Bad Request", requestIDFromRequest(r), err)
+}
+
+// ErrorInternalServerError is a helper function to send a 500 Internal Server Error response.
+func ErrorInternalServerError(w http.ResponseWriter, r *http.Request, err error) {
+	writeError(w, http.StatusInternalServerError, "Internal Server Error", requestIDFromRequest(r), err)
+}
+
+// ErrorNotFound is a helper function to send a 404 Not Found response.
+func ErrorNotFound(w http.ResponseWriter, r *http.Request, err error) {
+	writeError(w, http.StatusNotFound, "Not Found", requestIDFromRequest(r), err)
+}
+
+// ErrorUnauthorized is a helper function to send a 401 Unauthorized response.
+func ErrorUnauthorized(w http.ResponseWriter, r *http.Request, err error) {
+	writeError(w, http.StatusUnauthorized, "Unauthorized", requestIDFromRequest(r), err)
+}

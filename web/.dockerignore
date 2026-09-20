@@ -1,0 +1,31 @@
+node_modules
+dist
+*.log
+
+# Generated Python files and local TLS/authentication material.
+__pycache__/
+*.py[cod]
+*.pem
+*.key
+*.p12
+*.pfx
+.htpasswd
+.htpasswd.*
+
+.env
+.env.*
+private
+.git
+
+# Apply secret exclusions inside nested directories too.
+**/.env
+**/.env.*
+**/private
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/.htpasswd
+**/.htpasswd.*
+**/__pycache__
+**/*.py[cod]

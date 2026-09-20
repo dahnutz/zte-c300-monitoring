@@ -1,0 +1,35 @@
+.git
+.env
+.env.*
+private
+bin
+coverage.out
+*.log
+.idea
+.vscode
+compose.override.yaml
+
+# Generated Python files and local TLS/authentication material.
+__pycache__/
+*.py[cod]
+*.pem
+*.key
+*.p12
+*.pfx
+.htpasswd
+.htpasswd.*
+web/node_modules
+web/dist
+
+# Apply secret exclusions inside nested directories too.
+**/.env
+**/.env.*
+**/private
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/.htpasswd
+**/.htpasswd.*
+**/__pycache__
+**/*.py[cod]

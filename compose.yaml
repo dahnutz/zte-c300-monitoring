@@ -1,0 +1,117 @@
+name: zte-c300-monitoring
+
+services:
+  redis:
+    image: ${REDIS_IMAGE:-docker.io/library/redis:7.2-alpine}
+    restart: unless-stopped
+    command: [redis-server, --save, "", --appendonly, "no", --maxmemory, 256mb, --maxmemory-policy, allkeys-lru]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  timescaledb:
+    image: ${TIMESCALEDB_IMAGE:-docker.io/timescale/timescaledb:2.17.2-pg16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${TIMESCALEDB_USER:-c300}
+      POSTGRES_PASSWORD: ${TIMESCALEDB_PASSWORD:?Set a unique database password in .env}
+      POSTGRES_DB: ${TIMESCALEDB_DB:-c300_monitoring}
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TIMESCALEDB_USER:-c300} -d ${TIMESCALEDB_DB:-c300_monitoring}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  collector:
+    image: ${COLLECTOR_IMAGE:-zte-c300-monitoring:dev}
+    pull_policy: never
+    build:
+      context: .
+      target: runtime
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      REDIS_HOST: redis
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "8081"
+      SNMP_HOST: ${SNMP_HOST:?Set SNMP_HOST in .env}
+      SNMP_COMMUNITY: ${SNMP_COMMUNITY:?Set a read-only SNMP community in .env}
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+      TIMESCALEDB_HOST: timescaledb
+      TIMESCALEDB_PORT: "5432"
+      TIMESCALEDB_USER: ${TIMESCALEDB_USER:-c300}
+      TIMESCALEDB_PASSWORD: ${TIMESCALEDB_PASSWORD:?Set a unique database password in .env}
+      TIMESCALEDB_DB: ${TIMESCALEDB_DB:-c300_monitoring}
+      TIMESCALEDB_SSLMODE: disable
+      POLL_ENABLED: ${POLL_ENABLED:-false}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-120}
+      POLL_START_DELAY_SECONDS: ${POLL_START_DELAY_SECONDS:-15}
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${HTTP_PORT:-8081}:8081"
+    healthcheck:
+      test: [CMD, /zte-c300-monitoring, healthcheck]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  ui:
+    image: ${UI_IMAGE:-zte-c300-monitoring-ui:dev}
+    pull_policy: never
+    build:
+      context: ./web
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      API_KEY: ${API_KEY:?Set API_KEY in .env}
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${UI_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      collector:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  timescaledb_data:

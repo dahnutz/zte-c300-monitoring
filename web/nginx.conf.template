@@ -1,0 +1,41 @@
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    gzip on;
+    gzip_types text/css application/javascript application/json;
+
+    location = /healthz {
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+    }
+
+    location /api/ {
+        add_header Cache-Control "no-store" always;
+        limit_except GET { deny all; }
+        if ($http_sec_fetch_site = cross-site) { return 403; }
+        # This proxy injects a server credential; it is same-origin only.
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_hide_header Access-Control-Allow-Credentials;
+        proxy_pass http://collector:8081/api/;
+        proxy_http_version 1.1;
+        proxy_set_header X-API-Key "${API_KEY}";
+        proxy_set_header Accept $http_accept;
+        proxy_read_timeout 95s;
+    }
+
+    location = /version {
+        proxy_pass http://collector:8081/version;
+        proxy_read_timeout 10s;
+    }
+
+    location = /readyz {
+        proxy_pass http://collector:8081/readyz;
+        proxy_read_timeout 10s;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-store";
+    }
+}
