@@ -5,7 +5,7 @@ RUN npm ci
 COPY . .
 RUN npm test && npm run build
 
-FROM docker.io/nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+FROM docker.io/nginxinc/nginx-unprivileged:1.31-alpine AS runtime
 USER root
 RUN apk add --no-cache gettext \
     && rm -f /etc/nginx/conf.d/default.conf \
