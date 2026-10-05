@@ -97,13 +97,16 @@ both services. See [architecture](architecture.md).
 | `POLL_ENABLED` | `false` | Template/Compose default `false`; explicitly enable after bounded acceptance |
 | `POLL_INTERVAL_SECONDS` | `120` | Minimum 30; sequential cycles, not a per-ONU freshness guarantee |
 | `POLL_START_DELAY_SECONDS` | `15` | Lets SNMP/Redis become ready |
+| `POLL_SPREAD` | `true` | Pace remaining PONs across the leftover interval so SNMP is not one chassis burst |
+| `POLL_PON_GAP_MS` | `500` | Minimum pause after each PON. ZTE CLI async-show (`%Code 490`) shares the management CPU |
 | `DEVICE_VENDOR` / `DEVICE_FAMILY` / `DEVICE_ROLE` | `zte` / `c300` / `olt` | Stored with samples for later Huawei/Cisco adapters |
 
 The poller only reads SNMP. HTTP `DELETE .../cache/clear` drops Redis keys, not
 ONUs. History: `GET /api/v1/history/samples` (`run=latest`, `status`, `count_by`,
 `serial`, `board`, `pon`, `onu_id`, `from`, `to`, `limit`; `count_by` also accepts
 `eth_link`), `GET /api/v1/history/runs`, `GET /api/v1/history/status-events`,
-`GET /api/v1/history/eth-events` and `GET /api/v1/history/unauth`. The same
+`GET /api/v1/history/eth-events`, `GET /api/v1/history/unauth` and
+`GET /api/v1/history/duplicate-serials` (`scope=current` or `history`). The same
 paths exist under `/api/v1/olt/{olt_id}/history/...`. Schema upgrades are
 additive (`schema_migrations`); existing `onu_samples` are kept. See
 [API catalog](api.md).

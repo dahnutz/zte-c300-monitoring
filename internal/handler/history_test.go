@@ -171,3 +171,47 @@ func TestHistoryHandlerEventsAndUnauth(t *testing.T) {
 		t.Fatalf("unauth = %#v", body.Data)
 	}
 }
+
+func TestHistoryHandlerDuplicateSerials(t *testing.T) {
+	mem := store.NewMemory()
+	ctx := t.Context()
+	start := time.Now().UTC().Add(-time.Minute)
+	end := time.Now().UTC()
+	id, err := mem.InsertCollectionRun(ctx, store.CollectionRun{DeviceID: "default", StartedAt: start, Status: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = mem.FinishCollectionRun(ctx, store.CollectionRun{
+		ID: id, DeviceID: "default", StartedAt: start, FinishedAt: &end, Status: "ok",
+	})
+	_ = mem.InsertSamples(ctx, []store.ONUSample{
+		{Time: start.Add(time.Second), DeviceID: "default", Serial: "ZTEGMOVE", Board: 3, PON: 1, ONUID: 4, Status: "Offline"},
+		{Time: start.Add(2 * time.Second), DeviceID: "default", Serial: "ZTEGMOVE", Board: 8, PON: 2, ONUID: 9, Status: "Online"},
+	})
+	h := NewHistoryHandler(mem)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/history/duplicate-serials", nil)
+	req = req.WithContext(reqctx.WithDeviceID(req.Context(), "default"))
+	rr := httptest.NewRecorder()
+	h.ListDuplicateSerials(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Data store.DuplicateSerialList `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.Count != 1 || body.Data.Serials[0].Serial != "ZTEGMOVE" {
+		t.Fatalf("duplicates = %#v", body.Data)
+	}
+
+	bad := httptest.NewRequest(http.MethodGet, "/api/v1/history/duplicate-serials?scope=live", nil)
+	bad = bad.WithContext(reqctx.WithDeviceID(bad.Context(), "default"))
+	badRR := httptest.NewRecorder()
+	h.ListDuplicateSerials(badRR, bad)
+	if badRR.Code != http.StatusBadRequest {
+		t.Fatalf("bad scope status=%d", badRR.Code)
+	}
+}

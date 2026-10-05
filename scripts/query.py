@@ -9,6 +9,7 @@ shell does not treat & as a background job.
     python3 scripts/query.py /api/v1/history/status-events serial=ZTEG00000001
     python3 scripts/query.py /api/v1/history/eth-events serial=ZTEG00000001 port=1
     python3 scripts/query.py /api/v1/history/unauth
+    python3 scripts/query.py /api/v1/history/duplicate-serials
     python3 scripts/query.py '/api/v1/history/samples?run=latest&status=Offline'
 """
 import json

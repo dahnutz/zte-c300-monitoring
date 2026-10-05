@@ -5,6 +5,7 @@ import { OnuList } from "./OnuList";
 import { Overview } from "./Overview";
 import { PonMap } from "./PonMap";
 import { Runs } from "./Runs";
+import { Duplicates } from "./Duplicates";
 import { Unauth } from "./Unauth";
 
 export function App() {
@@ -17,6 +18,7 @@ export function App() {
           <Route path="onus/:serial" element={<OnuDetail />} />
           <Route path="pons" element={<PonMap />} />
           <Route path="unauth" element={<Unauth />} />
+          <Route path="duplicates" element={<Duplicates />} />
           <Route path="runs" element={<Runs />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

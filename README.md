@@ -79,7 +79,9 @@ An observed free ONU ID is not a reservation and can change immediately.
 There is currently **no MAC last-seen table, per-ONU traffic collection, phone
 field-mode contract, alarm delivery, trap receiver, provisioning or billing
 integration**. Unconfigured-ONU discovery is implemented as a candidate SNMP
-walk (`GET /history/unauth` and the Unconfigured UI page). A failed or
+walk (`GET /history/unauth` and the Unconfigured UI page). Duplicate serials
+from port migrations are a Timescale query (`GET /history/duplicate-serials`
+and the Duplicate SNs page). A failed or
 unconfirmed walk is `unsupported`, never a verified empty network.
 
 Compose serves the operator UI at `http://127.0.0.1:8080`. Inventory, charts and
@@ -111,10 +113,12 @@ requests query SNMP live. Concurrent identical collection requests are coalesced
 When `POLL_ENABLED=true`, a background loop walks each configured PON in
 sequence and stores snapshots in TimescaleDB. This includes PON-scoped Ethernet
 collection; it is not just a name-only walk. After each cycle it also derives
-status/UNI change events and walks a candidate unconfigured-ONU table. The
-poller is read-only and disabled in the public template until one-PON
-acceptance and load measurement. HTTP DELETE routes clear Redis only; they
-never delete ONUs on the OLT.
+status/UNI change events and walks a candidate unconfigured-ONU table. By
+default the poller pauses between PONs and spreads the remaining work across
+`POLL_INTERVAL_SECONDS` so the OLT CLI (ZTE async-show / `%Code 490`) can
+still run. Keep `SNMP_MAX_CONCURRENT=1` on C300. The poller is read-only and
+disabled in the public template until one-PON acceptance and load measurement.
+HTTP DELETE routes clear Redis only; they never delete ONUs on the OLT.
 
 Redis is disposable cache, not historical storage. The supplied Redis
 deployment does not persist it. TimescaleDB is the durable store and uses a
@@ -200,7 +204,7 @@ management network or a VPN and a read-only OLT account/ACL for the collector ho
 
 ## Development and tests
 
-Native prerequisites: Go 1.26.8, Make, a C compiler for the race detector, and
+Native prerequisites: Go 1.27.1, Make, a C compiler for the race detector, and
 internet for the first dependency download. A local OLT or Redis is not needed
 for unit/integration tests. Use a clean terminal with no live OLT settings exported.
 

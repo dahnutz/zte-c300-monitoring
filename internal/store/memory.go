@@ -324,3 +324,9 @@ func (m *Memory) ListUnauth(_ context.Context, deviceID string) (UnauthList, err
 	}
 	return UnauthList{Status: "unavailable", Message: "no unconfigured-ONU discovery has run yet", ONUs: []UnauthONU{}}, nil
 }
+
+func (m *Memory) ListDuplicateSerials(_ context.Context, deviceID, scope string) (DuplicateSerialList, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return BuildDuplicateSerials(deviceID, m.samples, latestFinishedRun(m.runs, deviceID), scope), nil
+}

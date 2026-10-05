@@ -141,6 +141,40 @@ func TestMemoryRecordsStatusAndEthTransitions(t *testing.T) {
 	}
 }
 
+func TestMemoryDuplicateSerialsCurrentAndHistory(t *testing.T) {
+	mem := NewMemory()
+	ctx := t.Context()
+	start := time.Now().UTC().Add(-time.Minute)
+	end := time.Now().UTC()
+	id, err := mem.InsertCollectionRun(ctx, CollectionRun{DeviceID: "default", StartedAt: start, Status: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.FinishCollectionRun(ctx, CollectionRun{
+		ID: id, DeviceID: "default", StartedAt: start, FinishedAt: &end, Status: "ok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.InsertSamples(ctx, []ONUSample{
+		{Time: start.Add(time.Second), DeviceID: "default", Serial: "ZTEGMOVE", Board: 3, PON: 1, ONUID: 4, Name: "old", Status: "Offline"},
+		{Time: start.Add(2 * time.Second), DeviceID: "default", Serial: "ZTEGMOVE", Board: 8, PON: 2, ONUID: 9, Name: "new", Status: "Online"},
+		{Time: start.Add(-time.Hour), DeviceID: "default", Serial: "ZTEGOLD", Board: 3, PON: 1, ONUID: 1, Status: "Online"},
+		{Time: start.Add(3 * time.Second), DeviceID: "default", Serial: "ZTEGOLD", Board: 9, PON: 1, ONUID: 2, Status: "Online"},
+		{Time: start.Add(4 * time.Second), DeviceID: "default", Serial: "ZTEGONE", Board: 3, PON: 2, ONUID: 1, Status: "Online"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := mem.ListDuplicateSerials(ctx, "default", DuplicateScopeCurrent)
+	if err != nil || current.Count != 1 || current.Serials[0].Serial != "ZTEGMOVE" || current.Serials[0].CurrentCount != 2 {
+		t.Fatalf("current = %#v err=%v", current, err)
+	}
+	history, err := mem.ListDuplicateSerials(ctx, "default", DuplicateScopeHistory)
+	if err != nil || history.Count != 2 {
+		t.Fatalf("history = %#v err=%v", history, err)
+	}
+}
+
 func TestNoDiscoveryIsUnavailable(t *testing.T) {
 	list, err := NewMemory().ListUnauth(t.Context(), "example")
 	if err != nil || list.Status != "unavailable" || !list.ObservedAt.IsZero() {

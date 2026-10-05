@@ -105,6 +105,30 @@ func (h *HistoryHandler) ListEthEvents(w http.ResponseWriter, r *http.Request) {
 	utils.SendJSONResponse(w, http.StatusOK, utils.WebResponse{Code: http.StatusOK, Status: "success", Data: rows})
 }
 
+func (h *HistoryHandler) ListDuplicateSerials(w http.ResponseWriter, r *http.Request) {
+	if !h.ready(w, r) {
+		return
+	}
+	scope := store.NormalizeDuplicateScope(r.URL.Query().Get("scope"))
+	if scope == "" {
+		utils.HandleError(w, r, apperrors.NewValidationError(
+			"scope must be current or history",
+			map[string]any{"scope": r.URL.Query().Get("scope")},
+		))
+		return
+	}
+	deviceID := reqctx.DeviceIDFromContext(r.Context())
+	list, err := h.Store.ListDuplicateSerials(r.Context(), deviceID, scope)
+	if err != nil {
+		utils.HandleError(w, r, err)
+		return
+	}
+	if list.Serials == nil {
+		list.Serials = []store.DuplicateSerial{}
+	}
+	utils.SendJSONResponse(w, http.StatusOK, utils.WebResponse{Code: http.StatusOK, Status: "success", Data: list})
+}
+
 func (h *HistoryHandler) ListUnauth(w http.ResponseWriter, r *http.Request) {
 	if !h.ready(w, r) {
 		return

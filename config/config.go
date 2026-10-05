@@ -114,6 +114,21 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+func getEnvAsBool(key string, defaultValue bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	default:
+		return defaultValue
+	}
+}
+
 // getEnvAsUint16 retrieves an environment variable as uint16 or returns a default value
 func getEnvAsUint16(key string, defaultValue uint16) uint16 {
 	if value := os.Getenv(key); value != "" {
@@ -306,10 +321,16 @@ func LoadConfig() (*Config, error) {
 	if startDelay < 0 {
 		startDelay = 0
 	}
+	ponGapMS := getEnvAsInt("POLL_PON_GAP_MS", 500)
+	if ponGapMS < 0 {
+		ponGapMS = 0
+	}
 	cfg.PollCfg = PollConfig{
 		Enabled:    getEnv("POLL_ENABLED", "false") == "true",
 		Interval:   time.Duration(pollInterval) * time.Second,
 		StartDelay: time.Duration(startDelay) * time.Second,
+		PONGap:     time.Duration(ponGapMS) * time.Millisecond,
+		Spread:     getEnvAsBool("POLL_SPREAD", true),
 	}
 	if cfg.PollCfg.Enabled && !cfg.StoreCfg.Enabled() {
 		return nil, fmt.Errorf("POLL_ENABLED=true requires TIMESCALEDB_HOST")

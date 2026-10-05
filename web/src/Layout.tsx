@@ -5,6 +5,7 @@ const links = [
   { to: "/onus", label: "ONUs" },
   { to: "/pons", label: "Boards / PON" },
   { to: "/unauth", label: "Unconfigured" },
+  { to: "/duplicates", label: "Duplicate SNs" },
   { to: "/runs", label: "Poller runs" },
 ];
 

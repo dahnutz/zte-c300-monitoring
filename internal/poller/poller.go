@@ -49,6 +49,8 @@ type Poller struct {
 	registry Registry
 	interval time.Duration
 	delay    time.Duration
+	gap      time.Duration
+	spread   bool
 }
 
 // New constructs a poller. interval is clamped to at least 30s by config.
@@ -58,30 +60,24 @@ func New(st store.Store, registry Registry, cfg config.PollConfig) *Poller {
 		registry: registry,
 		interval: cfg.Interval,
 		delay:    cfg.StartDelay,
+		gap:      cfg.PONGap,
+		spread:   cfg.Spread,
 	}
 }
 
 // Run blocks until ctx is cancelled. One full device pass at a time.
+// The next cycle starts at interval from this cycle's start, so spreading
+// PONs does not add a second full wait and a slow cycle cannot overlap.
 func (p *Poller) Run(ctx context.Context) {
-	if p.delay > 0 {
-		timer := time.NewTimer(p.delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
+	defer logger.Info("poller_stopped")
+	if !sleepCtx(ctx, p.delay) {
+		return
 	}
-	p.cycle(ctx)
-	ticker := time.NewTicker(p.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info("poller_stopped")
+	for sleepCtx(ctx, 0) {
+		started := time.Now()
+		p.cycle(ctx)
+		if !sleepCtx(ctx, p.interval-time.Since(started)) {
 			return
-		case <-ticker.C:
-			p.cycle(ctx)
 		}
 	}
 }
@@ -121,6 +117,10 @@ func (p *Poller) pollDevice(ctx context.Context, target DeviceTarget) {
 
 	slots := append([]int(nil), target.Boards...)
 	sort.Ints(slots)
+	left := countPONs(target)
+	if _, ok := target.Collect.(UnconfiguredCollector); ok {
+		left++
+	}
 	for _, board := range slots {
 		pons := target.Pons[board]
 		for pon := 1; pon <= pons; pon++ {
@@ -137,14 +137,60 @@ func (p *Poller) pollDevice(ctx context.Context, target DeviceTarget) {
 					zap.Int("pon", pon),
 					zap.Error(err),
 				)
-				continue
+			} else {
+				run.PonsOK++
+				run.ONUsSampled += sampled
 			}
-			run.PonsOK++
-			run.ONUsSampled += sampled
+			left--
+			if left > 0 && !p.pace(ctx, started, left) {
+				p.finish(ctx, &run, started, ctx.Err())
+				return
+			}
 		}
 	}
 	p.discoverUnconfigured(ctx, target)
 	p.finish(ctx, &run, started, nil)
+}
+
+func countPONs(target DeviceTarget) int {
+	n := 0
+	for _, board := range target.Boards {
+		n += target.Pons[board]
+	}
+	return n
+}
+
+// pace yields the management plane after a PON walk. Minimum gap always
+// applies; spread stretches the leftover interval across remaining units so
+// CLI async-show on C300 is not blocked for a full-chassis burst.
+func (p *Poller) pace(ctx context.Context, started time.Time, left int) bool {
+	wait := p.gap
+	if wait < 0 {
+		wait = 0
+	}
+	if p.spread && left > 0 && p.interval > 0 {
+		if remaining := p.interval - time.Since(started); remaining > 0 {
+			slot := remaining / time.Duration(left)
+			if slot > wait {
+				wait = slot
+			}
+		}
+	}
+	return sleepCtx(ctx, wait)
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (p *Poller) pollPON(ctx context.Context, target DeviceTarget, board, pon int) (int, error) {

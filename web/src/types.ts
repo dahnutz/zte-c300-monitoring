@@ -88,6 +88,35 @@ export type UnauthONU = {
   last_seen_at: string;
 };
 
+export type DuplicatePosition = {
+  board: number;
+  pon: number;
+  onu_id: number;
+  name: string;
+  status: string;
+  last_seen: string;
+  samples: number;
+  in_latest_run: boolean;
+};
+
+export type DuplicateSerial = {
+  device_id: string;
+  serial_number: string;
+  name: string;
+  current_count: number;
+  position_count: number;
+  positions: DuplicatePosition[];
+};
+
+export type DuplicateSerialList = {
+  scope: string;
+  run_id?: number;
+  from?: string;
+  to?: string;
+  count: number;
+  serials: DuplicateSerial[];
+};
+
 export type UnauthList = {
   status: string;
   oid?: string;

@@ -302,6 +302,7 @@ func mountDynamicONURoutes(router chi.Router, history *handler.HistoryHandler) {
 		router.Get("/history/status-events", history.ListStatusEvents)
 		router.Get("/history/eth-events", history.ListEthEvents)
 		router.Get("/history/unauth", history.ListUnauth)
+		router.Get("/history/duplicate-serials", history.ListDuplicateSerials)
 	}
 
 	router.Route("/board", func(r chi.Router) {

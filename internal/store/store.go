@@ -115,4 +115,5 @@ type Store interface {
 	RecordSampleTransitions(ctx context.Context, samples []ONUSample) error
 	ReplaceUnauth(ctx context.Context, deviceID string, list UnauthList) error
 	ListUnauth(ctx context.Context, deviceID string) (UnauthList, error)
+	ListDuplicateSerials(ctx context.Context, deviceID, scope string) (DuplicateSerialList, error)
 }

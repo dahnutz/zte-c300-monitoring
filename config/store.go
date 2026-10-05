@@ -21,6 +21,12 @@ type PollConfig struct {
 	Enabled    bool
 	Interval   time.Duration
 	StartDelay time.Duration
+	// PONGap is a minimum pause after each PON so the OLT CLI can run.
+	// ZTE async show (code 490) shares the management CPU with SNMP.
+	PONGap time.Duration
+	// Spread paces remaining PONs across the leftover interval instead of
+	// walking the chassis in one burst.
+	Spread bool
 }
 
 // DeviceMeta is stored with each telemetry stream so later Huawei OLT or

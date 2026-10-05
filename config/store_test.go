@@ -37,6 +37,23 @@ func TestLoadConfig_PollerAndStoreDefaults(t *testing.T) {
 	if cfg.DeviceMeta.Vendor != "zte" || cfg.DeviceMeta.Family != "c300" {
 		t.Fatalf("device = %+v", cfg.DeviceMeta)
 	}
+	if !cfg.PollCfg.Spread || cfg.PollCfg.PONGap != 500*time.Millisecond {
+		t.Fatalf("poll pacing = %+v", cfg.PollCfg)
+	}
+}
+
+func TestLoadConfig_PollSpreadOff(t *testing.T) {
+	t.Setenv("SNMP_HOST", "10.0.0.1")
+	t.Setenv("SNMP_COMMUNITY", "public")
+	t.Setenv("POLL_SPREAD", "false")
+	t.Setenv("POLL_PON_GAP_MS", "1500")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PollCfg.Spread || cfg.PollCfg.PONGap != 1500*time.Millisecond {
+		t.Fatalf("poll pacing = %+v", cfg.PollCfg)
+	}
 }
 
 func TestStoreConfigDSNEscapesPassword(t *testing.T) {

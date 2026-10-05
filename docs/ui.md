@@ -37,6 +37,7 @@ API-only deployment does not supply data for these history pages.
 | ONU detail | Serial-filtered samples + optional live GET | RX/TX plot, last 10 samples, status since, UNI ports and flap history, Query now |
 | Boards / PON | Selected stored collection run | Observed occupancy and optical values |
 | Unconfigured | `/history/unauth` | OLT-seen serials that are not provisioned |
+| Duplicate SNs | `/history/duplicate-serials` | Same serial on more than one port (last cycle or history) |
 | Poller runs | `/history/runs` | Cycle duration and reported PON errors |
 
 ## Screenshots

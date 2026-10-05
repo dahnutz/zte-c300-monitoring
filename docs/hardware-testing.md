@@ -90,5 +90,8 @@ optical checks pass. Mark optional unsupported fields explicitly. A readiness
 Stop expanding scope. Capture only the minimum raw OID/value pair and matching
 CLI observation privately, redact identifiers for a fixture, and add a regression
 test before changing mapping/conversion code. Avoid repeated whole-enterprise
-walks or raising concurrency to mask timeouts. Leave the previous tested image
-available for rollback.
+walks or raising concurrency to mask timeouts. If the OLT CLI returns
+`%Code 490: Asyn show command return error` during polling, keep
+`SNMP_MAX_CONCURRENT=1`, leave `POLL_SPREAD=true`, and raise
+`POLL_PON_GAP_MS` rather than speeding the walk up. Leave the previous tested
+image available for rollback.

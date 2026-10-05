@@ -105,3 +105,27 @@ func TestPollerPONErrorIsPartial(t *testing.T) {
 		t.Fatalf("run = %+v", runs[0])
 	}
 }
+
+func TestPollerPONGapYieldsBetweenPONs(t *testing.T) {
+	mem := store.NewMemory()
+	p := New(mem, staticRegistry{targets: []DeviceTarget{{
+		ID:      "default",
+		Boards:  []int{1},
+		Pons:    map[int]int{1: 2},
+		Collect: fakeCollector{rows: []model.ONUInfoPerBoard{{Board: 1, PON: 1, ID: 1, SerialNumber: "ZTEGTEST0001", Status: "Online"}}},
+	}}}, config.PollConfig{Interval: time.Minute, PONGap: 40 * time.Millisecond})
+
+	started := time.Now()
+	p.cycle(context.Background())
+	if elapsed := time.Since(started); elapsed < 40*time.Millisecond {
+		t.Fatalf("cycle finished in %s, want at least one PON gap", elapsed)
+	}
+}
+
+func TestSleepCtxCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if sleepCtx(ctx, time.Second) {
+		t.Fatal("cancelled context should not wait")
+	}
+}

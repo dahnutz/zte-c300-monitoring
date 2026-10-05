@@ -207,8 +207,9 @@ return **503**.
 | GET | `/history/status-events` | Derived Online/Offline (and other) transitions |
 | GET | `/history/eth-events` | Per-port UNI admin/link flaps |
 | GET | `/history/unauth` | Last unconfigured-ONU discovery (`ok` / `empty` / `unsupported` / `unavailable`) |
+| GET | `/history/duplicate-serials` | Serials seen at more than one board/PON/ONU-ID (`scope=current` or `history`) |
 
-The same five paths exist under `/api/v1/olt/{olt_id}/history/...`. They read
+The same six paths exist under `/api/v1/olt/{olt_id}/history/...`. They read
 Timescale only, except that `/history/unauth` reports the last poller discovery
 (itself an SNMP walk, not a live request from this GET).
 
@@ -376,6 +377,24 @@ serial leaves the unconfigured list.
 
 ```sh
 python3 scripts/query.py /api/v1/history/unauth
+```
+
+### `GET /history/duplicate-serials`
+
+Timescale-only. Lists serials observed at more than one board/PON/ONU-ID so
+migrated ONUs that still exist on the old port can be cleaned on the OLT.
+
+| Query | Default | Meaning |
+|---|---|---|
+| `scope` | `current` | `current` = same SN on more than one port in the latest finished run; `history` = SN has ever changed port |
+
+Each serial includes every position, last status, last seen time, sample count,
+and whether that position appeared in the latest run. This GET does not delete
+OLT config or `onu_samples`.
+
+```sh
+python3 scripts/query.py /api/v1/history/duplicate-serials
+python3 scripts/query.py /api/v1/history/duplicate-serials scope=history
 ```
 
 Sample rows also carry `status_changed_at`, `previous_status` and

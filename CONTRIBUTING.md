@@ -27,11 +27,11 @@ Fork this repository and clone your fork. The upstream origin and MIT attributio
 are recorded in [UPSTREAM.md](UPSTREAM.md). From the repository root:
 
 ```sh
-# Go 1.26.8, Make and a C compiler are required.
+# Go 1.27.1, Make and a C compiler are required.
 make check
 make build
 
-# Node.js 22.18+ and npm are required for frontend work.
+# Node.js 22.18+ (CI and the UI image use Node 26) and npm are required for frontend work.
 cd web
 npm ci
 npm test

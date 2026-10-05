@@ -1,4 +1,4 @@
-import type { CollectionRun, CountResult, Envelope, EthEvent, LiveOnu, ONUSample, StatusEvent, UnauthList } from "./types";
+import type { CollectionRun, CountResult, DuplicateSerialList, Envelope, EthEvent, LiveOnu, ONUSample, StatusEvent, UnauthList } from "./types";
 
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, { headers: { Accept: "application/json" }, cache: "no-store", signal });
@@ -46,6 +46,10 @@ export function ethEvents(query: Record<string, string | number | undefined>): P
 
 export function unauth(): Promise<UnauthList> {
   return getJSON<UnauthList>("/api/v1/history/unauth");
+}
+
+export function duplicateSerials(scope: "current" | "history" = "current"): Promise<DuplicateSerialList> {
+  return getJSON<DuplicateSerialList>(`/api/v1/history/duplicate-serials?scope=${scope}`);
 }
 
 export async function liveOnu(board: number, pon: number, onu: number, expectedSerial: string, signal?: AbortSignal): Promise<LiveOnu> {

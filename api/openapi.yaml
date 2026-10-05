@@ -1009,6 +1009,36 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/history/duplicate-serials:
+    get:
+      summary: List serials seen at more than one port
+      description: >
+        Timescale only. `scope=current` (default) is the latest finished run.
+        `scope=history` is any serial that has changed board/PON/ONU-ID.
+        Also available at `/api/v1/olt/{olt_id}/history/duplicate-serials`.
+      operationId: listDuplicateSerials
+      tags: [History]
+      parameters:
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum: [current, history]
+            default: current
+      responses:
+        '200':
+          description: Duplicate serial report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryDuplicateSerialsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/history/unauth:
     get:
       summary: List unconfigured ONUs last seen by the OLT
@@ -1563,6 +1593,52 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/EthEvent'
+
+    HistoryDuplicateSerialsResponse:
+      allOf:
+        - $ref: '#/components/schemas/WebResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DuplicateSerialList'
+
+    DuplicatePosition:
+      type: object
+      properties:
+        board: { type: integer }
+        pon: { type: integer }
+        onu_id: { type: integer }
+        name: { type: string }
+        status: { type: string }
+        last_seen: { type: string, format: date-time }
+        samples: { type: integer }
+        in_latest_run: { type: boolean }
+
+    DuplicateSerial:
+      type: object
+      properties:
+        device_id: { type: string }
+        serial_number: { type: string }
+        name: { type: string }
+        current_count: { type: integer }
+        position_count: { type: integer }
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DuplicatePosition'
+
+    DuplicateSerialList:
+      type: object
+      properties:
+        scope: { type: string, enum: [current, history] }
+        run_id: { type: integer, format: int64 }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        count: { type: integer }
+        serials:
+          type: array
+          items:
+            $ref: '#/components/schemas/DuplicateSerial'
 
     HistoryUnauthResponse:
       allOf:

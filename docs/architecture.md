@@ -117,6 +117,8 @@ existing routes are not automatically proof of those properties.
   mode. Cache-management routes are also outside installer permissions.
 - Coordinate field reads with background polling under one per-OLT budget.
   Prefer responsive, bounded selected-ONU reads without flooding the management CPU.
+  The poller yields between PONs (`POLL_PON_GAP_MS`) and can spread a cycle
+  across the interval (`POLL_SPREAD`) so C300 CLI async-show is not starved.
 - Pause field refresh when the page is hidden, the network is lost or the session
   ends; a abandoned mobile tab must not create endless background collection.
 - Back up durable state and verify schema restore before upgrades. Do not remove

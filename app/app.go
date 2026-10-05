@@ -138,6 +138,8 @@ func (a *App) Start(ctx context.Context) error {
 		logger.Info("poller_started",
 			zap.Duration("interval", cfg.PollCfg.Interval),
 			zap.Duration("start_delay", cfg.PollCfg.StartDelay),
+			zap.Duration("pon_gap", cfg.PollCfg.PONGap),
+			zap.Bool("spread", cfg.PollCfg.Spread),
 		)
 	}
 

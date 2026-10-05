@@ -1,4 +1,4 @@
-FROM docker.io/library/node:22-bookworm-slim AS build
+FROM docker.io/library/node:26-bookworm-slim AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci

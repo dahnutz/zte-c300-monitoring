@@ -1,6 +1,6 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { discoveryCount, inventoryNotice, latestInventory, liveOnu } from '../src/api.ts';
+import { discoveryCount, duplicateSerials, inventoryNotice, latestInventory, liveOnu } from '../src/api.ts';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
@@ -45,6 +45,16 @@ test('live read rejects an ONU replaced at the same position or missing serial',
     globalThis.fetch = async () => response({ board: 2, pon: 1, onu_id: 4, serial_number });
     await assert.rejects(liveOnu(2, 1, 4, 'TEST00000001'), /identity could not be confirmed/);
   }
+});
+
+test('duplicate serials request current scope by default', async () => {
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /\/history\/duplicate-serials\?scope=current$/);
+    return response({ scope: 'current', count: 1, serials: [{ serial_number: 'ZTEGMOVE', current_count: 2, position_count: 2, positions: [] }] });
+  };
+  const list = await duplicateSerials();
+  assert.equal(list.count, 1);
+  assert.equal(list.serials[0].serial_number, 'ZTEGMOVE');
 });
 
 test('confirmed live identity is returned; cancellation reaches fetch', async () => {

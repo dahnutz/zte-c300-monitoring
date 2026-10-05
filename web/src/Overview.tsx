@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { discoveryCount, inventoryNotice, formatPower, formatTime, latestInventory, rxClass, unauth, version, type CollectorVersion } from "./api";
+import { discoveryCount, duplicateSerials, inventoryNotice, formatPower, formatTime, latestInventory, rxClass, unauth, version, type CollectorVersion } from "./api";
 import { ErrorBox, Pill } from "./Layout";
-import type { CountResult, ONUSample, UnauthList } from "./types";
+import type { CountResult, DuplicateSerialList, ONUSample, UnauthList } from "./types";
 
 export function Overview() {
   const navigate = useNavigate();
@@ -11,6 +11,7 @@ export function Overview() {
   const [rows, setRows] = useState<ONUSample[]>([]);
   const [ver, setVer] = useState<CollectorVersion | null>(null);
   const [found, setFound] = useState<UnauthList | null>(null);
+  const [dupes, setDupes] = useState<DuplicateSerialList | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<unknown>(null);
 
@@ -18,10 +19,11 @@ export function Overview() {
     let cancel = false;
     (async () => {
       try {
-        const [{ run, rows: list }, v, discovered] = await Promise.all([
+        const [{ run, rows: list }, v, discovered, duplicates] = await Promise.all([
           latestInventory(),
           version().catch(() => null),
           unauth().catch(() => null),
+          duplicateSerials("current").catch(() => null),
         ]);
         if (cancel) return;
         const tally = (key: (row: ONUSample) => string) => {
@@ -45,6 +47,7 @@ export function Overview() {
         setNotice(inventoryNotice(run, list));
         setVer(v);
         setFound(discovered);
+        setDupes(duplicates);
       } catch (err) {
         if (!cancel) setError(err);
       }
@@ -106,6 +109,11 @@ export function Overview() {
           <div className="label">Unconfigured</div>
           <div className="value">{discoveryCount(found)}</div>
           <div className="hint">{found?.status || "no discovery yet"}</div>
+        </div>
+        <div className="card warn" onClick={() => navigate("/duplicates")} style={{ cursor: "pointer" }}>
+          <div className="label">Duplicate SNs</div>
+          <div className="value">{dupes ? dupes.count : "—"}</div>
+          <div className="hint">same serial on more than one port this cycle</div>
         </div>
       </div>
 
